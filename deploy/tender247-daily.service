@@ -1,0 +1,9 @@
+[Unit]
+Description=Tender247 daily scrape run
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tender247_scrapper
+ExecStart=/opt/tender247_scrapper/.venv/bin/python main.py --mode daily
+User=tender247
+Group=tender247

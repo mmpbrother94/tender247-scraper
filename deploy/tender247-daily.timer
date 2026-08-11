@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the Tender247 daily scrape every day at 01:00
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

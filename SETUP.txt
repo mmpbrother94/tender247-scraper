@@ -1,0 +1,143 @@
+TENDER247 FRESH TENDERS - SCRAPER + API
+=======================================
+
+One job: keep the account's "Fresh Results" feed from tender247.com current,
+and serve it over a read-only API.
+
+    LIVE API:  https://tender.sieplindia.co.in/apidata
+    AUTH:      header  X-API-Key: <API_ACCESS_KEY from .env>
+    EVERYTHING IN ONE CALL:  GET /apidata/tenders/all
+
+
+RUNS ENTIRELY ON THE SERVER
+---------------------------
+Both the scraper and the API live on the cPanel host. Nothing runs on anyone's
+PC, and no machine needs to be switched on for the data to stay current.
+
+    cron (server, 01:30 IST daily):
+        cd ~/tender_api_v2 && <venv>/python fresh_scraper.py
+            >> ~/tender_api_v2/logs/cron.log 2>&1
+            && touch ~/tender_api_v2/tmp/restart.txt
+
+    View/edit:  crontab -l   /   crontab -e
+    Logs:       ~/tender_api_v2/logs/cron.log  and  logs/fresh.log
+
+This is only possible because authentication needs no browser -- see
+fresh_auth.py. An earlier version drove Chromium through the login modal via
+Playwright, which is what tied the pipeline to a single Windows machine.
+
+
+HOW LOGIN WORKS WITHOUT A BROWSER
+---------------------------------
+Two plain HTTP calls, no Playwright, no display:
+
+  1. POST www.tender247.com/apigateway/T247ApiTender/api/auth/login
+         {email_id, password}  ->  site token + user_id
+  2. POST analyticsapi.tender247.com/dashboardapi/api/user-login-by-userid
+         {user_id}, Bearer <site token>
+         ->  analytics token + bidder_id + user_email_service_query_id
+
+The analytics token is what the data endpoints want, and step 2 also returns
+the bidder_id / user_query_id that the search payload needs -- so the whole
+request body is built from scratch (fresh_auth.build_search_payload) rather
+than sniffed off a live page. Tokens last ~5 hours; a run takes ~45 seconds.
+
+
+WHAT THE SCRAPER DOES
+---------------------
+    python fresh_scraper.py
+
+  1. log in (2 HTTP calls)
+  2. sweep the whole Fresh Results feed (tab_id=1, ~2,559 tenders, 1 page)
+  3. fetch the participating-bidder list for any tender that needs one
+  4. write to fresh_tenders.db
+
+It re-reads the WHOLE feed every night, not just new rows. The feed is small
+enough that a full sweep costs ~15 seconds, and re-reading is the only reliable
+way to catch a tender moving Technical -> Financial -> AOC, which is where the
+winner and the L1/L2 bid values finally appear. A new-rows-only scraper would
+capture every tender at its least useful moment and never revisit it.
+
+Bidders are re-fetched when a tender's stage moves, for the same reason:
+ranks and bid values do not exist at Technical stage.
+
+Safe to run any time. Tenders are upserted by result_id; a failed bidder fetch
+is deliberately not marked done, so the next run retries exactly those.
+
+
+THE DATA
+--------
+  tenders           ~2,559   one row per tender
+  bidders           ~9,681   one row per participating bidder
+  bidder_fetch_log           which tenders have had bidders fetched
+  runs                       one row per scrape, with counts and duration
+
+stage is Technical, Financial or AOC. Only AOC tenders are awarded, so
+winner_bidder_name and contract_value are populated for those and empty for the
+rest -- that is the tender lifecycle, not missing data. Likewise bidder_rank
+(L1/L2/...) and bid_value appear once a tender reaches financial opening.
+
+first_seen_at  = when this scraper first saw the tender  -> use for "what's new"
+status_update_date = tender247's own stage date, can be much older
+
+
+API ENDPOINTS
+-------------
+  GET /                    what's available            (no key)
+  GET /health              liveness                    (no key)
+  GET /status              counts, stage split, last scrape result
+  GET /tenders/all         THE WHOLE FEED IN ONE RESPONSE (~3 MB, ~3s)
+  GET /tenders             filterable + paginated
+       filters: stage, organization, location, tender_number, winner,
+                date_from, date_to, since, search, with_bidders,
+                page, page_size (max 5000)
+  GET /tenders/{result_id} one tender with its ranked bidder list
+  GET /bidders?name=...    every tender a bidder took part in
+
+Prefer /bidders?name=... over /bidders/{name}: behind Passenger the path
+arrives still percent-encoded, so a name with a space would match nothing.
+The path form decodes defensively, but the query form avoids the problem.
+
+
+FILES
+-----
+  fresh_auth.py     browser-free login + search-payload builder
+  fresh_scraper.py  the nightly scrape (login -> tenders -> bidders)
+  fresh_store.py    SQLite schema and upserts (fresh_tenders.db)
+  fresh_api.py      the FastAPI app
+  passenger_wsgi.py cPanel/Passenger entry point; wraps fresh_api in a WSGI
+                    bridge and strips the /apidata prefix
+  config.py         paths, credentials and API key, all read from .env
+  fresh_tenders.db  the data (~3 MB)
+  exports/          Postman collection
+
+
+DEPLOYMENT (cPanel)
+-------------------
+  Setup Python App:
+      Python version   3.13.14
+      Application root tender_api_v2
+      Application URL  tender.sieplindia.co.in/apidata
+      Startup file     passenger_wsgi.py
+      Entry point      application
+
+  venv needs: fastapi, a2wsgi, uvicorn, requests, python-dotenv
+  Restart:    touch ~/tender_api_v2/tmp/restart.txt
+
+  NOTE: the Application startup file in cPanel currently reads
+  passenger_wsgi_debug.py, a file that does not exist. It works only because
+  Passenger falls back to passenger_wsgi.py. Worth correcting to
+  passenger_wsgi.py so a future Passenger change cannot break it.
+
+
+WHAT TENDER247 DOES NOT EXPOSE
+------------------------------
+Verified by dumping every endpoint the Result, Company Profile, Competitors
+Bids and Compare Bidders pages fire:
+
+  - Bidder contact details (address, phone, owner/MD name). The bidder endpoint
+    returns exactly six fields: name, technical/financial/AOC status, bid value,
+    rank. Nothing more exists to scrape.
+  - Tender documents or attachments.
+  - Any per-stage date history. The stage date is status_update_date, so the
+    AOC date is status_update_date on a row whose stage is AOC.

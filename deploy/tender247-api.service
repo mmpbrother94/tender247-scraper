@@ -1,0 +1,16 @@
+[Unit]
+Description=Tender247 scraper API (FastAPI/uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+# Edit these two paths to match where you deploy the project on the server.
+WorkingDirectory=/opt/tender247_scrapper
+ExecStart=/opt/tender247_scrapper/.venv/bin/uvicorn api_server:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+User=tender247
+Group=tender247
+
+[Install]
+WantedBy=multi-user.target

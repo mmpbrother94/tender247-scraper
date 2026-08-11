@@ -1,0 +1,22 @@
+.env
+cookies.json
+tenders_vault.db
+*.xlsx
+__pycache__/
+*.pyc
+.venv/
+logs/
+
+# Scraped databases (contain harvested tender data)
+*.db
+fresh_tenders.db
+
+# Bulk exports (89MB zip exceeds sensible repo size)
+exports/
+*.zip
+
+# Local tooling / runtime
+.claude/
+*.log
+*.err
+*.out
